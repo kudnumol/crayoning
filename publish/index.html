@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Редактор транспортных схем</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <!-- SIDEBAR -->
+  <aside id="sidebar">
+    <h1><span class="dot"></span>Редактор схем метро</h1>
+    <div class="scroll">
+
+      <!-- 1. Routes -->
+      <div class="section">
+        <h2>1 · Маршруты (линии)</h2>
+        <div id="routeList"></div>
+        <button class="primary" id="btnAddRoute">+ Новый маршрут</button>
+      </div>
+
+      <!-- 2. Route options -->
+      <div class="section" id="routeOpts">
+        <h2>2 · Параметры маршрута</h2>
+        <div class="row">
+          <div style="flex:2">
+            <label>Название</label>
+            <input type="text" id="routeName" placeholder="Линия 1">
+          </div>
+          <div style="flex:1">
+            <label>Номер</label>
+            <input type="text" id="routeNum" maxlength="3" placeholder="1">
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Цвет</label>
+            <input type="color" id="routeColor" value="#e3242b">
+          </div>
+          <div>
+            <label>Толщина: <span id="widthVal">8</span>px</label>
+            <input type="range" id="routeWidth" min="2" max="24" value="8">
+          </div>
+        </div>
+        <button class="danger" id="btnDelRoute" style="margin-top:10px">Удалить маршрут</button>
+      </div>
+
+      <!-- 3. Draw -->
+      <div class="section">
+        <h2>3 · Рисование</h2>
+        <button id="btnDraw">✏️ Режим рисования</button>
+        <label>Шаг угла</label>
+        <select id="angleStep">
+          <option value="45">45° — квадратная сетка с диагоналями</option>
+          <option value="30">60° — треугольная сетка (углы 120°, без вертикали)</option>
+          <option value="90">90° — только горизонтали/вертикали</option>
+          <option value="0">Свободно (без сетки)</option>
+        </select>
+        <label>Скругление поворотов: <span id="cornerVal">24</span>px</label>
+        <input type="range" id="cornerRadius" min="0" max="60" value="24">
+        <div class="hint">Кликай по холсту, чтобы добавлять точки маршрута.
+          При шаге <b>30°</b> повороты образуют углы 120° (как на схеме Москвы).
+          <b>Enter / двойной клик</b> — завершить, <b>Esc</b> — выйти,
+          <b>Backspace</b> — удалить последнюю точку.</div>
+      </div>
+
+      <!-- 4. Edit -->
+      <div class="section">
+        <h2>4 · Редактирование линии</h2>
+        <button id="btnEdit">✎ Режим редактирования</button>
+        <button id="btnAlign" style="margin-top:8px">⟂ Выровнять линию по углам</button>
+        <button id="btnAlignAll" style="margin-top:6px">⟂ Выровнять ВСЕ линии</button>
+        <div class="hint">Тяни точки-ромбы (◇) или станции — линия и станции двигаются вместе.
+          <b>Клик по точке</b> (без перетаскивания) — попап: удалить, а для конца линии — «Продлить».
+          <b>Клик по линии</b> — добавить точку. <b>Клик по другой линии</b> — выбрать её.
+          Перетаскивание пересадки (◆) изгибает все её линии.<br>
+          После перетаскивания нажми <b>«Выровнять линию по углам»</b> — линия перестроится по выбранному шагу угла и сетке.</div>
+      </div>
+
+      <!-- 5. Stations -->
+      <div class="section">
+        <h2>5 · Станции</h2>
+        <button id="btnStation">🚉 Режим станций</button>
+        <label>Тип станции</label>
+        <div class="seg" id="stationType">
+          <button data-t="dot" class="sel">Точка</button>
+          <button data-t="interchange">Пересадка</button>
+          <button data-t="mega">Мега</button>
+        </div>
+        <div class="seg" id="stationType2" style="margin-top:4px">
+          <button data-t="tick">Тире</button>
+          <button data-t="limited">Огранич.</button>
+          <button data-t="terminus">Конечная</button>
+        </div>
+        <label>Подпись станции</label>
+        <input type="text" id="stationLabel" placeholder="Название станции">
+        <label>Направление подписи</label>
+        <div class="dirgrid" id="dirGrid">
+          <button data-d="nw">↖</button><button data-d="n">↑</button><button data-d="ne">↗</button>
+          <button data-d="w">←</button><button data-d="c">•</button><button data-d="e" class="sel">→</button>
+          <button data-d="sw">↙</button><button data-d="s">↓</button><button data-d="se">↘</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <div>
+            <label>Шрифт, px</label>
+            <input type="number" id="fontSize" value="14" min="8" max="48">
+          </div>
+          <div>
+            <label>Жирн.</label>
+            <select id="fontWeight"><option value="600">Да</option><option value="400">Нет</option></select>
+          </div>
+        </div>
+        <div class="hint">Кликни <b>по линии</b> — станция привяжется к ней (по пустому месту — холст двигается).
+          <b>Пересадка</b> ставится на пересечение и привязывается ко всем линиям сразу.
+          Клик по станции — удалить.</div>
+      </div>
+
+      <!-- 6. Save / Load -->
+      <div class="section">
+        <h2>6 · Сохранение и экспорт</h2>
+        <div class="btn-row">
+          <button id="btnSaveJson">💾 Код карты</button>
+          <button id="btnLoadJson">📂 Загрузить</button>
+        </div>
+        <div class="btn-row">
+          <button id="btnExportSvg">⬇ SVG</button>
+          <button id="btnExportPng">⬇ PNG</button>
+        </div>
+        <div class="btn-row">
+          <button id="btnSample">🗺 Пример</button>
+          <button id="btnClear" class="danger">Очистить</button>
+        </div>
+        <div class="btn-row">
+          <button id="btnShare">🔗 Поделиться ссылкой</button>
+        </div>
+        <div class="btn-row">
+          <button id="btnReport">🐞 Сообщить о проблеме</button>
+        </div>
+      </div>
+
+      <!-- view -->
+      <div class="section">
+        <h2>Вид</h2>
+        <label>Фон холста</label>
+        <select id="bgChoice">
+          <option value="#ffffff">Белый</option>
+          <option value="#f4f6f8">Светло-серый</option>
+          <option value="#fbf3e0">Кремовый</option>
+          <option value="#11151c">Тёмный</option>
+        </select>
+        <div class="btn-row">
+          <button id="btnGrid">Сетка: вкл</button>
+          <button id="btnLog">Логи</button>
+        </div>
+        <div class="hint">Колесо мыши — зум. Зажми <b>Пробел</b> или среднюю кнопку и тяни — пан.</div>
+      </div>
+
+    </div>
+  </aside>
+
+  <!-- CANVAS -->
+  <main id="canvasWrap">
+    <svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div id="banner"></div>
+    <div id="finishPopup">
+      <button id="fpFinish" class="primary">✓ Завершить</button>
+      <button id="fpContinue">Продолжить</button>
+    </div>
+    <div id="editPopup">
+      <button id="epExtend" class="primary">↗ Продлить</button>
+      <button id="epDelete" class="danger">✕ Удалить</button>
+      <button id="epCancel">Отмена</button>
+    </div>
+    <div id="topbar">
+      <div class="grp">
+        <button id="tbUndo" title="Отменить (Ctrl+Z)">↶ Отмена</button>
+        <button id="tbRedo" title="Вернуть (Ctrl+Y)">↷ Вернуть</button>
+      </div>
+      <div class="grp">
+        <button id="tbZoomIn">＋</button>
+        <button id="tbZoomOut">－</button>
+        <button id="tbZoomReset">100%</button>
+        <button id="tbFit">⤢ Вместить</button>
+      </div>
+      <div id="status">Режим: <span id="modeTag">выбор</span> · <span id="zoomTag">100%</span></div>
+    </div>
+
+    <!-- log panel -->
+    <div id="logPanel">
+      <header>
+        <b>Журнал событий</b>
+        <button id="logDownload">Скачать .log</button>
+        <button id="logClear">Очистить</button>
+        <button id="logClose">✕</button>
+      </header>
+      <div id="logBody"></div>
+    </div>
+
+    <div id="overlay">
+      <div class="modal">
+        <h3 id="modalTitle">Код карты</h3>
+        <div class="body">
+          <p class="hint" id="modalHint">Скопируй этот код в текстовый файл, чтобы продолжить позже.</p>
+          <textarea id="modalText" spellcheck="false"></textarea>
+        </div>
+        <div class="foot">
+          <button id="modalCancel" style="background:transparent">Закрыть</button>
+          <button id="modalCopy">Копировать</button>
+          <button id="modalAction" class="primary">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+  </main>
+</div>
+
+<script src="app.js" defer></script>
+</body>
+</html>

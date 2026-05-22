@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# Node / Wrangler
+node_modules/
+.wrangler/
+npm-debug.log*
+
+# логи редактора (если кто-то сохранит локально)
+*.log
