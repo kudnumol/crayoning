@@ -705,14 +705,20 @@ function render(){
   }
 
   // line stations (dot/tick/limited/terminus) — со смещением пучка
+  const tgroups=terminusGroups();
   for(const r of state.routes){
     const vecs=bvecs.get(r.id);
     for(const st of (r.stations||[])){
+      if(st.type==='terminus'){
+        const grp=tgroups.get(Math.round(st.x)+','+Math.round(st.y));
+        if(grp && grp.length>1) continue;        // общая конечная — рисуем единым маркером ниже
+      }
       const v=stationOffsetVec(r, vecs, st);
       const sst=(v.x||v.y) ? {...st, x:st.x+v.x, y:st.y+v.y} : st;
       drawStation(g, r, sst);
     }
   }
+  for(const [,mem] of tgroups) if(mem.length>1) drawCombinedTerminus(g, mem);
 
   // interchange/mega nodes (поверх линий)
   for(const n of state.nodes) drawNode(g, n);
@@ -827,6 +833,41 @@ function drawLabel(sg, st, w, labelCol){
     'font-family':'-apple-system,Segoe UI,Arial,sans-serif',fill:labelCol||labelColor});
   t.textContent = st.label;
   sg.appendChild(t);
+}
+
+/* группы конечных станций в одной точке: ключ "x,y" → [{r,st}] */
+function terminusGroups(){
+  const groups=new Map();
+  for(const r of state.routes) for(const st of (r.stations||[])){
+    if(st.type!=='terminus') continue;
+    const k=Math.round(st.x)+','+Math.round(st.y);
+    if(!groups.has(k)) groups.set(k,[]);
+    groups.get(k).push({r,st});
+  }
+  return groups;
+}
+/* единый маркер общей конечной: цветные плашки с номерами линий рядом (без наложения) */
+function drawCombinedTerminus(g, members, labelCol){
+  const x=members[0].st.x, y=members[0].st.y;
+  const w=Math.max(...members.map(m=>m.r.width));
+  // упорядочим плашки как полосы пучка идут (по dir), просто стабильно по номеру
+  members=members.slice().sort((a,b)=> String(a.r.num).localeCompare(String(b.r.num),undefined,{numeric:true}));
+  const ch=w*1.7, gap=w*0.28, n=members.length;
+  const totalW=ch*n + gap*(n-1);
+  const sg=el('g',{});
+  for(let i=0;i<n;i++){
+    const m=members[i];
+    const bx=x - totalW/2 + i*(ch+gap);
+    sg.appendChild(el('rect',{x:bx, y:y-ch/2, width:ch, height:ch, fill:m.r.color,
+      stroke:'#fff','stroke-width':w*0.24, rx:ch*0.3}));
+    const num=(m.r.num!=null && m.r.num!=='')?String(m.r.num):'';
+    if(num){
+      const t=el('text',{x:bx+ch/2, y:y, 'text-anchor':'middle','dominant-baseline':'central',
+        'font-size':w*1.0,'font-weight':'700',fill:'#fff','font-family':'-apple-system,Segoe UI,Arial,sans-serif'});
+      t.textContent=num; sg.appendChild(t);
+    }
+  }
+  g.appendChild(sg);
 }
 
 /* радиус маркера узла-пересадки (по самой толстой из его линий) */
@@ -2215,14 +2256,20 @@ function buildExportSVG(scale=2){
       g.appendChild(p);
     }
   }
+  const tgroupsE=terminusGroups();
   for(const r of state.routes){
     const vecs=bvecs.get(r.id);
     for(const st of (r.stations||[])){
+      if(st.type==='terminus'){
+        const grp=tgroupsE.get(Math.round(st.x)+','+Math.round(st.y));
+        if(grp && grp.length>1) continue;
+      }
       const v=stationOffsetVec(r, vecs, st);
       const sst=(v.x||v.y) ? {...st, x:st.x+v.x, y:st.y+v.y} : st;
       drawStation(g, r, sst, '#1a1a1a');
     }
   }
+  for(const [,mem] of tgroupsE) if(mem.length>1) drawCombinedTerminus(g, mem, '#1a1a1a');
   for(const n of (state.nodes||[])) drawNode(g,n,'#1a1a1a');
   out.appendChild(g);
   return out;
