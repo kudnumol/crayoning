@@ -127,6 +127,17 @@
     transition:.25s;pointer-events:none}
   .toast.show{opacity:1}
   .toast.err{background:var(--danger)}
+  #projOverlay{position:absolute;inset:0;background:rgba(0,0,0,.5);z-index:21;display:none;
+    align-items:center;justify-content:center}
+  #projOverlay.open{display:flex}
+  #projList{display:flex;flex-direction:column;gap:8px}
+  .projitem{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;
+    background:#1b1e25;border:1px solid var(--line)}
+  .projitem .pinfo{flex:1;min-width:0}
+  .projitem .pname{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .projitem .pmeta{font-size:11px;color:var(--muted);margin-top:2px}
+  .projitem button{width:auto;padding:6px 12px;font-size:12px}
+  .projempty{font-size:12px;color:var(--muted);text-align:center;padding:16px}
   ::-webkit-scrollbar{width:9px;height:9px}
   ::-webkit-scrollbar-thumb{background:#3a4150;border-radius:5px}
 </style>
@@ -264,6 +275,25 @@
         </div>
       </div>
 
+      <!-- 7. Projects -->
+      <div class="section">
+        <h2>7 · Проекты</h2>
+        <label>Название проекта</label>
+        <input type="text" id="projName" placeholder="Моя схема">
+        <div class="btn-row">
+          <button id="btnSaveProject" class="primary">💾 Сохранить проект</button>
+          <button id="btnOpenProjects">📂 Мои проекты</button>
+        </div>
+        <div class="btn-row">
+          <button id="btnDownloadFile">⬇ Файл .json</button>
+          <button id="btnOpenFile">⬆ Открыть .json</button>
+        </div>
+        <div class="hint">Изменения <b>автосохраняются</b> в браузере — при перезагрузке схема восстановится сама.
+          «Сохранить проект» делает именованную копию (список — в «Мои проекты»).
+          «Файл .json» — сохранить/открыть как файл на диске.</div>
+        <input type="file" id="fileInput" accept=".json,application/json" style="display:none">
+      </div>
+
       <!-- view -->
       <div class="section">
         <h2>Вид</h2>
@@ -337,6 +367,18 @@
       </div>
     </div>
 
+    <div id="projOverlay">
+      <div class="modal">
+        <h3>Мои проекты</h3>
+        <div class="body">
+          <div id="projList"></div>
+        </div>
+        <div class="foot">
+          <button id="projClose" style="background:transparent">Закрыть</button>
+        </div>
+      </div>
+    </div>
+
     <div class="toast" id="toast"></div>
   </main>
 </div>
@@ -400,6 +442,10 @@ let canvasBg = '#ffffff';       // фон холста
 let gridColor1 = '#eef1f5', gridColor2 = '#dde3ea';
 let labelColor = '#1a1a1a';     // цвет подписей (адаптируется к фону)
 let editTarget = null;          // {routeId,idx} для попапа удаления точки
+let dirtySinceSave = false;     // есть несохранённые (в именованный проект/файл) изменения
+let autosaveTimer = null;       // дебаунс автосохранения в localStorage
+const LS_AUTOSAVE = 'metro:autosave';
+const LS_PROJECTS = 'metro:projects';
 
 /* station option state */
 let stOpts = { type:'dot', dir:'e', fontSize:14, fontWeight:'600' };
@@ -546,6 +592,7 @@ function pushHistory(){
   history.push(snapshot());
   if(history.length>100) history.shift();
   future = [];
+  dirtySinceSave = true;
   updateUndoButtons();
 }
 function restore(json){
@@ -666,6 +713,7 @@ function render(){
       const ep=document.getElementById('editPopup'); ep.style.left=s.x+'px'; ep.style.top=s.y+'px';
     }
   }
+  scheduleAutosave();   // фоновое сохранение текущего состояния
 }
 
 /* семейство параллельных линий под углом angleDeg с шагом spacing,
@@ -1738,6 +1786,118 @@ document.getElementById('btnReport').onclick=()=>{
   document.getElementById('modalText').placeholder='Например: при выравнивании линия 2 ушла с сетки…';
 };
 
+/* ---------- СОХРАНЕНИЕ ПРОЕКТОВ ---------- */
+function safeLS(){ try{ return window.localStorage; }catch(e){ return null; } }
+
+/* фоновое автосохранение текущего состояния (с дебаунсом) */
+function scheduleAutosave(){
+  clearTimeout(autosaveTimer);
+  autosaveTimer=setTimeout(()=>{
+    const ls=safeLS(); if(!ls) return;
+    try{ ls.setItem(LS_AUTOSAVE, JSON.stringify({state, view, savedAt:Date.now()})); }
+    catch(e){ Log.warn('autosave failed', e.message); }
+  }, 600);
+}
+function restoreAutosave(){
+  const ls=safeLS(); if(!ls) return false;
+  try{
+    const raw=ls.getItem(LS_AUTOSAVE); if(!raw) return false;
+    const obj=JSON.parse(raw);
+    if(!obj || !obj.state || !obj.state.routes || !obj.state.routes.length) return false;
+    state=obj.state; state.nodes=state.nodes||[];
+    if(obj.view) view=obj.view;
+    state.selectedRoute = state.routes.some(r=>r.id===state.selectedRoute) ? state.selectedRoute : state.routes[0].id;
+    state.nextId = state.nextId || (Math.max(1,...state.routes.map(r=>r.id))+1);
+    Log.info('autosave restored, routes:', state.routes.length);
+    return true;
+  }catch(e){ Log.error('restore failed', e.message); return false; }
+}
+/* именованные проекты в localStorage */
+function getProjects(){ const ls=safeLS(); if(!ls) return {}; try{ return JSON.parse(ls.getItem(LS_PROJECTS)||'{}'); }catch(e){ return {}; } }
+function setProjects(p){ const ls=safeLS(); if(!ls) return; try{ ls.setItem(LS_PROJECTS, JSON.stringify(p)); }catch(e){ toast('Хранилище переполнено','err'); Log.error('projects save failed', e.message); } }
+function saveProject(name){
+  name=(name||'').trim(); if(!name){ toast('Введите название проекта','err'); return; }
+  const p=getProjects();
+  p[name]={ state: JSON.parse(JSON.stringify(state)), savedAt: Date.now() };
+  setProjects(p);
+  dirtySinceSave=false;
+  Log.info('project saved', name); toast('Проект «'+name+'» сохранён');
+  renderProjectsList();
+}
+function loadProject(name){
+  const item=getProjects()[name]; if(!item) return;
+  pushHistory();
+  state=JSON.parse(JSON.stringify(item.state)); state.nodes=state.nodes||[];
+  state.selectedRoute=state.routes.length?state.routes[0].id:null;
+  state.nextId=state.nextId||(Math.max(1,...state.routes.map(r=>r.id))+1);
+  dirtySinceSave=false;
+  document.getElementById('projOverlay').classList.remove('open');
+  renderRouteList(); syncRouteOpts(); fitToContent();
+  Log.info('project loaded', name); toast('Загружен проект «'+name+'»');
+}
+function deleteProject(name){
+  const p=getProjects(); delete p[name]; setProjects(p);
+  Log.info('project deleted', name); renderProjectsList();
+}
+function renderProjectsList(){
+  const box=document.getElementById('projList');
+  const p=getProjects();
+  const names=Object.keys(p).sort((a,b)=>(p[b].savedAt||0)-(p[a].savedAt||0));
+  box.innerHTML='';
+  if(!names.length){ box.innerHTML='<div class="projempty">Сохранённых проектов пока нет.</div>'; return; }
+  for(const nm of names){
+    const it=p[nm];
+    const routes=(it.state.routes||[]).length, nodes=(it.state.nodes||[]).length;
+    const d=new Date(it.savedAt||0);
+    const div=document.createElement('div'); div.className='projitem';
+    div.innerHTML=`<div class="pinfo"><div class="pname"></div>
+      <div class="pmeta">${routes} линий · ${nodes} пересадок · ${d.toLocaleString('ru-RU')}</div></div>`;
+    div.querySelector('.pname').textContent=nm;
+    const load=document.createElement('button'); load.className='primary'; load.textContent='Открыть';
+    load.onclick=()=>loadProject(nm);
+    const del=document.createElement('button'); del.className='danger'; del.textContent='✕';
+    del.onclick=()=>{ if(confirm('Удалить проект «'+nm+'»?')) deleteProject(nm); };
+    div.appendChild(load); div.appendChild(del);
+    box.appendChild(div);
+  }
+}
+function downloadProjectFile(){
+  const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'});
+  const u=URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=u; a.download='metro-схема-'+Date.now()+'.json'; a.click();
+  setTimeout(()=>URL.revokeObjectURL(u),1000);
+  dirtySinceSave=false; Log.info('project file downloaded'); toast('Файл сохранён');
+}
+function openProjectFile(file){
+  const reader=new FileReader();
+  reader.onload=()=>{
+    try{
+      const obj=JSON.parse(reader.result);
+      if(!obj || !obj.routes) throw new Error('не похоже на проект схемы');
+      pushHistory();
+      state=obj; state.nodes=state.nodes||[];
+      state.selectedRoute=state.routes.length?state.routes[0].id:null;
+      state.nextId=state.nextId||(Math.max(1,...state.routes.map(r=>r.id))+1);
+      dirtySinceSave=false;
+      renderRouteList(); syncRouteOpts(); fitToContent();
+      Log.info('project file opened, routes:', state.routes.length); toast('Проект открыт из файла');
+    }catch(e){ Log.error('open file failed', e.message); toast('Ошибка файла: '+e.message,'err'); }
+  };
+  reader.readAsText(file);
+}
+/* привязка кнопок раздела «Проекты» */
+document.getElementById('btnSaveProject').onclick=()=>saveProject(document.getElementById('projName').value);
+document.getElementById('projName').addEventListener('keydown',e=>{ if(e.key==='Enter') saveProject(e.target.value); });
+document.getElementById('btnOpenProjects').onclick=()=>{ renderProjectsList(); document.getElementById('projOverlay').classList.add('open'); };
+document.getElementById('projClose').onclick=()=>document.getElementById('projOverlay').classList.remove('open');
+document.getElementById('btnDownloadFile').onclick=downloadProjectFile;
+document.getElementById('btnOpenFile').onclick=()=>document.getElementById('fileInput').click();
+document.getElementById('fileInput').addEventListener('change',e=>{ if(e.target.files[0]) openProjectFile(e.target.files[0]); e.target.value=''; });
+/* предупреждение при закрытии, если есть несохранённые изменения */
+window.addEventListener('beforeunload', e=>{
+  if(dirtySinceSave && state.routes.some(r=>r.points && r.points.length)){ e.preventDefault(); e.returnValue=''; }
+});
+
 /* ---------- ЭКСПОРТ ---------- */
 function buildExportSVG(scale=2){
   const b=bbox(); if(!b){ toast('Пустая карта','err'); return null; }
@@ -1876,11 +2036,15 @@ function init(){
   setBg('#ffffff');         // белый фон по умолчанию
   if(loadFromHash()){
     renderRouteList(); syncRouteOpts(); setMode('select'); fitToContent();
+  } else if(restoreAutosave()){
+    renderRouteList(); syncRouteOpts(); setMode('select'); fitToContent();
+    toast('Восстановлен прошлый проект');
   } else {
     createRoute(true);
     startDrawing();         // первый же клик ставит точку
     renderRouteList(); syncRouteOpts();
   }
+  dirtySinceSave=false;
   updateUndoButtons();
   updateZoomTag();
   window.addEventListener('resize', render);
