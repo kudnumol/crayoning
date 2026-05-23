@@ -887,6 +887,8 @@ function segKeyOf(A,B){
 function routeIndex(id){ return state.routes.findIndex(r=>r.id===id); }
 
 /* для каждого маршрута — массив векторов смещения по сегментам (нули, если соло).
+   Общие грани группируются в КОРИДОРЫ (цепочки граней с одним и тем же набором линий),
+   ориентируются согласованно вдоль коридора — поэтому линии не перекрещиваются на изгибах.
    force=true — считать всегда (для экспорта); иначе в режимах draw/edit смещения нет */
 function buildBundles(force){
   const res=new Map();
@@ -895,27 +897,65 @@ function buildBundles(force){
   if(!bundling) return res;
   if(!force && (mode==='draw' || mode==='edit')) return res;
 
-  const groups=new Map();
+  // 1) собрать грани: key -> {members:[{routeId,seg}], routes:Set, p0, p1}
+  const segs=new Map();
   for(const r of state.routes){
     for(let i=0;i<r.points.length-1;i++){
       const A=r.points[i], B=r.points[i+1];
       if(A.x===B.x && A.y===B.y) continue;
       const key=segKeyOf(A,B);
-      if(!groups.has(key)) groups.set(key,[]);
-      groups.get(key).push({routeId:r.id, seg:i});
+      if(!segs.has(key)){ const p=key.split(',').map(Number); segs.set(key,{key,members:[],routes:new Set(),p0:{x:p[0],y:p[1]},p1:{x:p[2],y:p[3]}}); }
+      const e=segs.get(key); e.members.push({routeId:r.id, seg:i}); e.routes.add(r.id);
     }
   }
-  for(const [key,list] of groups){
-    if(list.length<2) continue;
-    const p=key.split(',').map(Number);
-    let dx=p[2]-p[0], dy=p[3]-p[1]; const L=Math.hypot(dx,dy)||1; dx/=L; dy/=L;
-    const nx=-dy, ny=dx;                       // левая нормаль канонического направления
-    list.sort((a,b)=> (routeIndex(a.routeId)-routeIndex(b.routeId)) || (a.routeId-b.routeId));
-    const N=list.length;
-    let spacing=8; for(const e of list){ const r=getRoute(e.routeId); if(r) spacing=Math.max(spacing, r.width); }
-    for(let k=0;k<N;k++){
-      const o=(k-(N-1)/2)*spacing;            // центрируем пучок на грани
-      res.get(list[k].routeId)[list[k].seg]={ x:nx*o, y:ny*o };
+  const bundled=[...segs.values()].filter(s=>s.routes.size>=2);
+  if(!bundled.length) return res;
+  for(const s of bundled){ s.rk=[...s.routes].sort((a,b)=>a-b).join('-'); }
+
+  const ptKey=p=>p.x+','+p.y;
+  const compByNode=new Map();
+  for(const s of bundled) for(const pt of [s.p0,s.p1]){ const k=ptKey(pt); (compByNode.get(k)||compByNode.set(k,[]).get(k)).push(s); }
+
+  // 2) коридоры — связные цепочки граней с ОДИНАКОВЫМ набором линий
+  const visited=new Set(), corridors=[];
+  for(const s of bundled){
+    if(visited.has(s.key)) continue;
+    const comp=[], stack=[s]; visited.add(s.key);
+    while(stack.length){ const c=stack.pop(); comp.push(c);
+      for(const pt of [c.p0,c.p1]) for(const nb of (compByNode.get(ptKey(pt))||[]))
+        if(!visited.has(nb.key) && nb.rk===c.rk){ visited.add(nb.key); stack.push(nb); }
+    }
+    corridors.push(comp);
+  }
+
+  // 3) ориентируем каждый коридор согласованно и раскладываем линии по полосам
+  for(const comp of corridors){
+    const routesArr=[...comp[0].routes].sort((a,b)=>(routeIndex(a)-routeIndex(b))||(a-b));
+    const N=routesArr.length;
+    let spacing=8; for(const id of routesArr){ const r=getRoute(id); if(r) spacing=Math.max(spacing,r.width); }
+
+    // найти конец коридора (узел степени 1) для линейного обхода
+    const deg=new Map();
+    for(const c of comp) for(const pt of [c.p0,c.p1]){ const k=ptKey(pt); deg.set(k,(deg.get(k)||0)+1); }
+    let startK=null; for(const [k,v] of deg){ if(v===1){ startK=k; break; } }
+    const localByNode=new Map();
+    for(const c of comp) for(const pt of [c.p0,c.p1]){ const k=ptKey(pt); (localByNode.get(k)||localByNode.set(k,[]).get(k)).push(c); }
+
+    const used=new Set(); let curK=startK || ptKey(comp[0].p0); let guard=0;
+    while(used.size<comp.length && guard++<comp.length+5){
+      let cand=(localByNode.get(curK)||[]).filter(c=>!used.has(c.key));
+      let c, from, to;
+      if(cand.length){ c=cand[0]; from=(ptKey(c.p0)===curK)?c.p0:c.p1; to=(from===c.p0)?c.p1:c.p0; }
+      else { c=comp.find(x=>!used.has(x.key)); if(!c) break; from=c.p0; to=c.p1; }
+      used.add(c.key);
+      let dx=to.x-from.x, dy=to.y-from.y; const L=Math.hypot(dx,dy)||1; dx/=L; dy/=L;
+      const nx=-dy, ny=dx;                       // левая нормаль ПОТОКА коридора (согласованно)
+      for(let k=0;k<N;k++){
+        const id=routesArr[k]; const lateral=(k-(N-1)/2)*spacing;
+        const m=c.members.find(mm=>mm.routeId===id);
+        if(m) res.get(id)[m.seg]={ x:nx*lateral, y:ny*lateral };
+      }
+      curK=ptKey(to);
     }
   }
   return res;
