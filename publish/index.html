@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Редактор транспортных схем</title>
+<title>Редактор схем транспорта</title>
 <style>
   :root{
     --bg:#1e2128; --panel:#262a33; --panel2:#2e333d; --line:#3a4150;
@@ -146,7 +146,7 @@
 <div id="app">
   <!-- SIDEBAR -->
   <aside id="sidebar">
-    <h1><span class="dot"></span>Редактор схем метро</h1>
+    <h1><span class="dot"></span>Редактор схем транспорта</h1>
     <div class="scroll">
 
       <!-- 1. Routes -->
@@ -680,13 +680,14 @@ function render(){
     g.appendChild(gridG);
   }
 
-  // bundling: смещения сегментов для каждого маршрута (для линий и станций)
-  const bvecs = buildBundles(false);
+  // bundling: смещения по сегментам + развёрнутые точки (с разрезкой по общим граням)
+  const {vecs:bvecs, exp:bexp} = buildBundles(false);
 
   // routes (lines) — концентрическое смещение для пучков
   for(const r of state.routes){
-    if(r.points.length>=2){
-      const d = linePathFor(r.points, bvecs.get(r.id), cornerRadius);
+    const pts=bexp.get(r.id);
+    if(pts.length>=2){
+      const d = linePathFor(pts, bvecs.get(r.id), cornerRadius);
       g.appendChild(el('path',{d, fill:'none', stroke:r.color, 'stroke-width':r.width,
         'stroke-linejoin':'round','stroke-linecap':'round'}));
     }
@@ -707,13 +708,13 @@ function render(){
   // line stations (dot/tick/limited/terminus) — со смещением пучка
   const tgroups=terminusGroups();
   for(const r of state.routes){
-    const vecs=bvecs.get(r.id);
+    const vecs=bvecs.get(r.id), pts=bexp.get(r.id);
     for(const st of (r.stations||[])){
       if(st.type==='terminus'){
         const grp=tgroups.get(Math.round(st.x)+','+Math.round(st.y));
         if(grp && grp.length>1) continue;        // общая конечная — рисуем единым маркером ниже
       }
-      const v=stationOffsetVec(r, vecs, st);
+      const v=stationOffsetVec(pts, vecs, st);
       const sst=(v.x||v.y) ? {...st, x:st.x+v.x, y:st.y+v.y} : st;
       drawStation(g, r, sst);
     }
@@ -926,22 +927,64 @@ function segKeyOf(A,B){
 }
 function routeIndex(id){ return state.routes.findIndex(r=>r.id===id); }
 
-/* для каждого маршрута — массив векторов смещения по сегментам (нули, если соло).
-   Общие грани группируются в КОРИДОРЫ (цепочки граней с одним и тем же набором линий),
-   ориентируются согласованно вдоль коридора — поэтому линии не перекрещиваются на изгибах.
-   force=true — считать всегда (для экспорта); иначе в режимах draw/edit смещения нет */
-function buildBundles(force){
-  const res=new Map();
-  for(const r of state.routes)
-    res.set(r.id, new Array(Math.max(0,(r.points||[]).length-1)).fill(0).map(()=>({x:0,y:0})));
-  if(!bundling) return res;
-  if(!force && (mode==='draw' || mode==='edit')) return res;
+/* ключ грани (бесконечной прямой) для проверки коллинеарности */
+function lineKeyOf(A,B){
+  let dx=B.x-A.x, dy=B.y-A.y; const L=Math.hypot(dx,dy)||1; dx/=L; dy/=L;
+  if(dx<-1e-9 || (Math.abs(dx)<1e-9 && dy<0)){ dx=-dx; dy=-dy; }
+  const perp=Math.round(A.x*(-dy)+A.y*dx);
+  return Math.round(Math.atan2(dy,dx)*1000)+'|'+perp;
+}
+/* развернуть маршруты: РЕЗАТЬ сегменты по чужим точкам на той же грани,
+   чтобы частичные перекрытия стали общими сегментами (для корректной разводки) */
+function expandRoutesForBundle(){
+  const linePts=new Map();
+  for(const r of state.routes) for(let i=0;i<r.points.length-1;i++){
+    const A=r.points[i],B=r.points[i+1]; if(A.x===B.x&&A.y===B.y) continue;
+    const k=lineKeyOf(A,B); (linePts.get(k)||linePts.set(k,[]).get(k)).push(A,B);
+  }
+  const exp=new Map();
+  for(const r of state.routes){
+    const out=[];
+    for(let i=0;i<r.points.length;i++){
+      const A=r.points[i]; out.push({x:A.x,y:A.y});
+      if(i>=r.points.length-1) continue;
+      const B=r.points[i+1]; if(A.x===B.x&&A.y===B.y) continue;
+      const L=Math.hypot(B.x-A.x,B.y-A.y), ux=(B.x-A.x)/L, uy=(B.y-A.y)/L;
+      const pts=linePts.get(lineKeyOf(A,B))||[];
+      const inner=[];
+      for(const p of pts){
+        const t=(p.x-A.x)*ux+(p.y-A.y)*uy, px=A.x+ux*t, py=A.y+uy*t;
+        if(t>0.5 && t<L-0.5 && Math.hypot(px-p.x,py-p.y)<0.5) inner.push({t,x:Math.round(px),y:Math.round(py)});
+      }
+      inner.sort((a,b)=>a.t-b.t);
+      let last=-1;
+      for(const ip of inner) if(ip.t-last>0.5){ out.push({x:ip.x,y:ip.y}); last=ip.t; }
+    }
+    exp.set(r.id,out);
+  }
+  return exp;
+}
 
-  // 1) собрать грани: key -> {members:[{routeId,seg}], routes:Set, p0, p1}
+/* {vecs, exp}: vecs — смещения по сегментам РАЗВЁРНУТЫХ точек, exp — сами развёрнутые точки.
+   Общие грани (включая частичные перекрытия) группируются в КОРИДОРЫ и согласованно разводятся.
+   force=true — считать всегда (экспорт); иначе в draw/edit смещения нет (скелет). */
+function buildBundles(force){
+  const active = bundling && !(!force && (mode==='draw' || mode==='edit'));
+  const exp = active ? expandRoutesForBundle()
+                     : (()=>{ const m=new Map(); for(const r of state.routes) m.set(r.id, r.points.map(p=>({x:p.x,y:p.y}))); return m; })();
+  const res=new Map();
+  for(const r of state.routes){
+    const pts=exp.get(r.id);
+    res.set(r.id, new Array(Math.max(0,pts.length-1)).fill(0).map(()=>({x:0,y:0})));
+  }
+  if(!active) return {vecs:res, exp};
+
+  // 1) собрать грани из РАЗВЁРНУТЫХ точек
   const segs=new Map();
   for(const r of state.routes){
-    for(let i=0;i<r.points.length-1;i++){
-      const A=r.points[i], B=r.points[i+1];
+    const pts=exp.get(r.id);
+    for(let i=0;i<pts.length-1;i++){
+      const A=pts[i], B=pts[i+1];
       if(A.x===B.x && A.y===B.y) continue;
       const key=segKeyOf(A,B);
       if(!segs.has(key)){ const p=key.split(',').map(Number); segs.set(key,{key,members:[],routes:new Set(),p0:{x:p[0],y:p[1]},p1:{x:p[2],y:p[3]}}); }
@@ -949,7 +992,7 @@ function buildBundles(force){
     }
   }
   const bundled=[...segs.values()].filter(s=>s.routes.size>=2);
-  if(!bundled.length) return res;
+  if(!bundled.length) return {vecs:res, exp};
   for(const s of bundled){ s.rk=[...s.routes].sort((a,b)=>a-b).join('-'); }
 
   const ptKey=p=>p.x+','+p.y;
@@ -992,11 +1035,11 @@ function buildBundles(force){
     // порядок полос: по стороне расхождения линий. Считаем на ОБОИХ концах коридора
     // и берём тот, где линии расходятся сильнее (там, где общая конечная — сигнала нет).
     function outsideKey(node, neib, perp, routeId){
-      const r=getRoute(routeId); if(!r) return 0;
-      let si=-1; for(let i=0;i<r.points.length;i++){ if(r.points[i].x===node.x && r.points[i].y===node.y){ si=i; break; } }
+      const pts=exp.get(routeId); if(!pts) return 0;
+      let si=-1; for(let i=0;i<pts.length;i++){ if(pts[i].x===node.x && pts[i].y===node.y){ si=i; break; } }
       if(si<0) return 0;
       let outside=null;
-      for(const c of [r.points[si-1], r.points[si+1]]){
+      for(const c of [pts[si-1], pts[si+1]]){
         if(c && !(c.x===neib.x && c.y===neib.y)){ outside=c; break; }
       }
       if(!outside) return 0;
@@ -1027,7 +1070,7 @@ function buildBundles(force){
       }
     }
   }
-  return res;
+  return {vecs:res, exp};
 }
 /* пересечение прямых (точка+направление) */
 function intersectPtDir(p,d,q,e){
@@ -1063,10 +1106,10 @@ function offsetPolyline(points, vecs){
   }
   return out;
 }
-/* вектор смещения для станции маршрута r по её положению */
-function stationOffsetVec(r, vecs, st){
-  if(!vecs || r.points.length<2) return {x:0,y:0};
-  const seg=nearestOnPolyline(r.points, st.x, st.y).seg;
+/* вектор смещения для станции по её положению (pts — развёрнутые точки маршрута) */
+function stationOffsetVec(pts, vecs, st){
+  if(!vecs || !pts || pts.length<2) return {x:0,y:0};
+  const seg=nearestOnPolyline(pts, st.x, st.y).seg;
   return vecs[seg] || {x:0,y:0};
 }
 /* знаковое боковое смещение каждого сегмента (в системе самого маршрута) из мировых векторов */
@@ -1092,26 +1135,37 @@ function roundedOffsetPath(points, lats, R){
     const p0=points[i-1], p1=points[i], p2=points[i+1];
     const v1={x:p0.x-p1.x,y:p0.y-p1.y}, v2={x:p2.x-p1.x,y:p2.y-p1.y};
     const l1=Math.hypot(v1.x,v1.y)||1, l2=Math.hypot(v2.x,v2.y)||1;
-    const rr=Math.min(R, l1/2, l2/2);
-    const a={x:p1.x+v1.x/l1*rr, y:p1.y+v1.y/l1*rr};
-    const b={x:p1.x+v2.x/l2*rr, y:p1.y+v2.y/l2*rr};
+    const u1={x:v1.x/l1,y:v1.y/l1}, u2={x:v2.x/l2,y:v2.y/l2};
     const sIn=lats[i-1]||0, sOut=lats[i]||0;
-    push(a.x,a.y, -v1.x,-v1.y, sIn);                  // вход в дугу (касательная по сегменту i-1→i)
+    const cross=u1.x*u2.y-u1.y*u2.x;                  // знак поворота
+    let dot=u1.x*u2.x+u1.y*u2.y; dot=Math.max(-1,Math.min(1,dot));
+    const alpha=Math.acos(dot);                       // внутренний угол между лучами
+    // почти прямая (нет поворота) — просто точка
+    if(Math.abs(cross)<1e-6 || alpha>Math.PI-1e-3){ push(p1.x,p1.y, v2.x,v2.y, sOut); continue; }
+    const half=alpha/2;
+    const td=Math.min(R, l1*0.5, l2*0.5);             // длина касательного отрезка
+    const rr=td*Math.tan(half);                       // радиус КРУГОВОЙ дуги (постоянная кривизна!)
+    const a={x:p1.x+u1.x*td, y:p1.y+u1.y*td};
+    const b={x:p1.x+u2.x*td, y:p1.y+u2.y*td};
+    // центр дуги по биссектрисе со стороны вогнутости
+    let bx=u1.x+u2.x, by=u1.y+u2.y; const bl=Math.hypot(bx,by)||1; bx/=bl; by/=bl;
+    const O={x:p1.x+bx*(td/Math.cos(half)), y:p1.y+by*(td/Math.cos(half))};
+    let a0=Math.atan2(a.y-O.y, a.x-O.x), a1=Math.atan2(b.y-O.y, b.x-O.x);
+    let dA=a1-a0; while(dA>Math.PI) dA-=2*Math.PI; while(dA<-Math.PI) dA+=2*Math.PI;
+    const dir=cross>0?-1:1;                            // касательная = радиус, повёрнутый; знак по направлению обхода
     const K=10;
-    for(let k=1;k<K;k++){
-      const t=k/K, mt=1-t;
-      const x=mt*mt*a.x + 2*mt*t*p1.x + t*t*b.x;
-      const y=mt*mt*a.y + 2*mt*t*p1.y + t*t*b.y;
-      const dx=2*mt*(p1.x-a.x)+2*t*(b.x-p1.x);        // касательная (производная безье)
-      const dy=2*mt*(p1.y-a.y)+2*t*(b.y-p1.y);
-      push(x,y, dx,dy, sIn+(sOut-sIn)*t);             // смещение плавно меняется на дуге (рампа)
+    for(let k=0;k<=K;k++){
+      const t=k/K, ang=a0+dA*t;
+      const rx=Math.cos(ang), ry=Math.sin(ang);        // единичный радиус-вектор от центра
+      const x=O.x+rx*rr, y=O.y+ry*rr;
+      const tx=-ry*dir, ty=rx*dir;                     // касательная (направление движения)
+      push(x,y, tx,ty, sIn+(sOut-sIn)*t);              // концентрическое смещение: радиус rr±off, без самопересечений
     }
-    push(b.x,b.y, v2.x,v2.y, sOut);
   }
   // последняя точка
   push(points[n-1].x, points[n-1].y, points[n-1].x-points[n-2].x, points[n-1].y-points[n-2].y, lats[n-2]||0);
   // убрать петли самопересечения (внутренняя сторона острых поворотов) → чистый внутренний угол
-  const clean=removeLoops(out);
+  const clean=softenSharp(removeLoops(out), Math.max(6, R*0.5));
   let d='M'+clean[0].x.toFixed(2)+' '+clean[0].y.toFixed(2);
   for(let i=1;i<clean.length;i++) d+=' L'+clean[i].x.toFixed(2)+' '+clean[i].y.toFixed(2);
   return d;
@@ -1139,6 +1193,46 @@ function removeLoops(pts){
     }
     if(!found || guard++>300) break;
   }
+  return out;
+}
+/* точка на ломаной на расстоянии d от индекса i в сторону dir (±1); вернёт {x,y, idx:последний пройденный индекс} */
+function walkAlong(pts, i, d, dir){
+  let x=pts[i].x, y=pts[i].y, idx=i, rem=d;
+  for(;;){
+    const j=idx+dir;
+    if(j<0||j>=pts.length) return {x, y, idx};
+    const sx=pts[j].x-x, sy=pts[j].y-y, l=Math.hypot(sx,sy);
+    if(l>=rem){ const t=rem/(l||1); return {x:x+sx*t, y:y+sy*t, idx}; }
+    rem-=l; x=pts[j].x; y=pts[j].y; idx=j;
+  }
+}
+/* скруглить только РЕЗКИЕ вершины ломаной (шип после среза петли), не трогая плавные дуги */
+function softenSharp(pts, fr){
+  if(pts.length<3) return pts;
+  // найти резкие вершины
+  const sharp=[];
+  for(let i=1;i<pts.length-1;i++){
+    const p0=pts[i-1], p1=pts[i], p2=pts[i+1];
+    const v1={x:p0.x-p1.x,y:p0.y-p1.y}, v2={x:p2.x-p1.x,y:p2.y-p1.y};
+    const l1=Math.hypot(v1.x,v1.y)||1, l2=Math.hypot(v2.x,v2.y)||1;
+    const dot=(-v1.x/l1)*(v2.x/l2)+(-v1.y/l1)*(v2.y/l2);
+    const dev=Math.acos(Math.max(-1,Math.min(1,dot)));   // 0=прямая, π=разворот
+    if(dev>=0.6) sharp.push(i);                            // ~34°+ — это шип, а не точка дуги
+  }
+  if(!sharp.length) return pts;
+  const isSharp=new Set(sharp);
+  const out=[pts[0]];
+  for(let i=1;i<pts.length-1;i++){
+    if(!isSharp.has(i)){ out.push(pts[i]); continue; }
+    const p1=pts[i];
+    const a=walkAlong(pts,i,fr,-1), b=walkAlong(pts,i,fr,+1);
+    const K=8;
+    out.push({x:a.x,y:a.y});
+    for(let k=1;k<K;k++){ const t=k/K, mt=1-t;
+      out.push({x:mt*mt*a.x+2*mt*t*p1.x+t*t*b.x, y:mt*mt*a.y+2*mt*t*p1.y+t*t*b.y}); }
+    out.push({x:b.x,y:b.y});
+  }
+  out.push(pts[pts.length-1]);
   return out;
 }
 function linePathFor(points, vecs, R){
@@ -2244,12 +2338,13 @@ function buildExportSVG(scale=2){
   bg.setAttribute('width',w);bg.setAttribute('height',h);bg.setAttribute('fill','#ffffff');
   out.appendChild(bg);
   const g=document.createElementNS(ns,'g');
-  const bvecs=buildBundles(true);   // в экспорте пучки всегда
+  const {vecs:bvecs, exp:bexp}=buildBundles(true);   // в экспорте пучки всегда
   // lines
   for(const r of state.routes){
-    if(r.points.length>=2){
+    const pts=bexp.get(r.id);
+    if(pts.length>=2){
       const p=document.createElementNS(ns,'path');
-      p.setAttribute('d', linePathFor(r.points, bvecs.get(r.id), cornerRadius));
+      p.setAttribute('d', linePathFor(pts, bvecs.get(r.id), cornerRadius));
       p.setAttribute('fill','none');p.setAttribute('stroke',r.color);
       p.setAttribute('stroke-width',r.width);p.setAttribute('stroke-linejoin','round');
       p.setAttribute('stroke-linecap','round');
@@ -2258,13 +2353,13 @@ function buildExportSVG(scale=2){
   }
   const tgroupsE=terminusGroups();
   for(const r of state.routes){
-    const vecs=bvecs.get(r.id);
+    const vecs=bvecs.get(r.id), pts=bexp.get(r.id);
     for(const st of (r.stations||[])){
       if(st.type==='terminus'){
         const grp=tgroupsE.get(Math.round(st.x)+','+Math.round(st.y));
         if(grp && grp.length>1) continue;
       }
-      const v=stationOffsetVec(r, vecs, st);
+      const v=stationOffsetVec(pts, vecs, st);
       const sst=(v.x||v.y) ? {...st, x:st.x+v.x, y:st.y+v.y} : st;
       drawStation(g, r, sst, '#1a1a1a');
     }
