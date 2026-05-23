@@ -948,23 +948,32 @@ function buildBundles(force){
     }
     if(!oriented.length) continue;
 
-    // порядок полос: по стороне, с которой линия заходит в коридор (на старте)
-    const startNode=oriented[0].from, secondNode=oriented[0].to;
-    let fdx=secondNode.x-startNode.x, fdy=secondNode.y-startNode.y; const fl=Math.hypot(fdx,fdy)||1; fdx/=fl; fdy/=fl;
-    const perp={x:-fdy, y:fdx};
-    function lateralKey(routeId){
+    // порядок полос: по стороне расхождения линий. Считаем на ОБОИХ концах коридора
+    // и берём тот, где линии расходятся сильнее (там, где общая конечная — сигнала нет).
+    function outsideKey(node, neib, perp, routeId){
       const r=getRoute(routeId); if(!r) return 0;
-      let si=-1; for(let i=0;i<r.points.length;i++){ if(r.points[i].x===startNode.x && r.points[i].y===startNode.y){ si=i; break; } }
+      let si=-1; for(let i=0;i<r.points.length;i++){ if(r.points[i].x===node.x && r.points[i].y===node.y){ si=i; break; } }
       if(si<0) return 0;
       let outside=null;
       for(const c of [r.points[si-1], r.points[si+1]]){
-        if(c && !(c.x===secondNode.x && c.y===secondNode.y)){ outside=c; break; }
+        if(c && !(c.x===neib.x && c.y===neib.y)){ outside=c; break; }
       }
       if(!outside) return 0;
-      let ox=outside.x-startNode.x, oy=outside.y-startNode.y; const ol=Math.hypot(ox,oy)||1; ox/=ol; oy/=ol;
-      return ox*perp.x + oy*perp.y;
+      let ox=outside.x-node.x, oy=outside.y-node.y; const ol=Math.hypot(ox,oy)||1;
+      return (ox/ol)*perp.x + (oy/ol)*perp.y;
     }
-    const routesArr=[...comp[0].routes].sort((a,b)=> (lateralKey(a)-lateralKey(b)) || (routeIndex(a)-routeIndex(b)));
+    const last=oriented[oriented.length-1];
+    const fA={x:oriented[0].to.x-oriented[0].from.x, y:oriented[0].to.y-oriented[0].from.y};
+    const fB={x:last.to.x-last.from.x, y:last.to.y-last.from.y};
+    const lA=Math.hypot(fA.x,fA.y)||1, lB=Math.hypot(fB.x,fB.y)||1;
+    const perpA={x:-fA.y/lA, y:fA.x/lA}, perpB={x:-fB.y/lB, y:fB.x/lB};
+    const ids=[...comp[0].routes];
+    const keysA=ids.map(id=>outsideKey(oriented[0].from, oriented[0].to, perpA, id));
+    const keysB=ids.map(id=>outsideKey(last.to, last.from, perpB, id));
+    const spread=a=>(Math.max(...a)-Math.min(...a));
+    const keys = spread(keysB)>spread(keysA) ? keysB : keysA;
+    const order=ids.map((id,i)=>({id,k:keys[i]})).sort((a,b)=>(a.k-b.k)||(routeIndex(a.id)-routeIndex(b.id)));
+    const routesArr=order.map(o=>o.id);
     const N=routesArr.length;
 
     for(const o of oriented){
@@ -1060,8 +1069,20 @@ function roundedOffsetPath(points, lats, R){
   }
   // последняя точка
   push(points[n-1].x, points[n-1].y, points[n-1].x-points[n-2].x, points[n-1].y-points[n-2].y, lats[n-2]||0);
-  let d='M'+out[0].x.toFixed(2)+' '+out[0].y.toFixed(2);
-  for(let i=1;i<out.length;i++) d+=' L'+out[i].x.toFixed(2)+' '+out[i].y.toFixed(2);
+  // убрать «шипы»/петли на внутренней стороне острых поворотов (самопересечение смещения)
+  const clean=[out[0]];
+  for(let k=1;k<out.length;k++){
+    const cand=out[k];
+    if(clean.length>=2){
+      const b=clean[clean.length-1], a=clean[clean.length-2];
+      const d1x=b.x-a.x,d1y=b.y-a.y,d2x=cand.x-b.x,d2y=cand.y-b.y;
+      const m1=Math.hypot(d1x,d1y),m2=Math.hypot(d2x,d2y);
+      if(m1>0.01&&m2>0.01 && (d1x*d2x+d1y*d2y)/(m1*m2) < -0.3) clean.pop(); // срезаем остриё
+    }
+    clean.push(cand);
+  }
+  let d='M'+clean[0].x.toFixed(2)+' '+clean[0].y.toFixed(2);
+  for(let i=1;i<clean.length;i++) d+=' L'+clean[i].x.toFixed(2)+' '+clean[i].y.toFixed(2);
   return d;
 }
 function linePathFor(points, vecs, R){
