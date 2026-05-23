@@ -928,34 +928,54 @@ function buildBundles(force){
     corridors.push(comp);
   }
 
-  // 3) ориентируем каждый коридор согласованно и раскладываем линии по полосам
+  // 3) ориентируем коридор и раскладываем линии по полосам ПО СТОРОНЕ ЗАХОДА (без лишних пересечений)
   for(const comp of corridors){
-    const routesArr=[...comp[0].routes].sort((a,b)=>(routeIndex(a)-routeIndex(b))||(a-b));
-    const N=routesArr.length;
-    let spacing=8; for(const id of routesArr){ const r=getRoute(id); if(r) spacing=Math.max(spacing,r.width); }
+    let spacing=8; for(const id of comp[0].routes){ const r=getRoute(id); if(r) spacing=Math.max(spacing,r.width); }
 
-    // найти конец коридора (узел степени 1) для линейного обхода
+    // линейный обход коридора от конца (узел степени 1)
     const deg=new Map();
     for(const c of comp) for(const pt of [c.p0,c.p1]){ const k=ptKey(pt); deg.set(k,(deg.get(k)||0)+1); }
     let startK=null; for(const [k,v] of deg){ if(v===1){ startK=k; break; } }
     const localByNode=new Map();
     for(const c of comp) for(const pt of [c.p0,c.p1]){ const k=ptKey(pt); (localByNode.get(k)||localByNode.set(k,[]).get(k)).push(c); }
 
-    const used=new Set(); let curK=startK || ptKey(comp[0].p0); let guard=0;
+    const oriented=[]; const used=new Set(); let curK=startK || ptKey(comp[0].p0); let guard=0;
     while(used.size<comp.length && guard++<comp.length+5){
       let cand=(localByNode.get(curK)||[]).filter(c=>!used.has(c.key));
       let c, from, to;
       if(cand.length){ c=cand[0]; from=(ptKey(c.p0)===curK)?c.p0:c.p1; to=(from===c.p0)?c.p1:c.p0; }
       else { c=comp.find(x=>!used.has(x.key)); if(!c) break; from=c.p0; to=c.p1; }
-      used.add(c.key);
-      let dx=to.x-from.x, dy=to.y-from.y; const L=Math.hypot(dx,dy)||1; dx/=L; dy/=L;
-      const nx=-dy, ny=dx;                       // левая нормаль ПОТОКА коридора (согласованно)
+      used.add(c.key); oriented.push({c,from,to}); curK=ptKey(to);
+    }
+    if(!oriented.length) continue;
+
+    // порядок полос: по стороне, с которой линия заходит в коридор (на старте)
+    const startNode=oriented[0].from, secondNode=oriented[0].to;
+    let fdx=secondNode.x-startNode.x, fdy=secondNode.y-startNode.y; const fl=Math.hypot(fdx,fdy)||1; fdx/=fl; fdy/=fl;
+    const perp={x:-fdy, y:fdx};
+    function lateralKey(routeId){
+      const r=getRoute(routeId); if(!r) return 0;
+      let si=-1; for(let i=0;i<r.points.length;i++){ if(r.points[i].x===startNode.x && r.points[i].y===startNode.y){ si=i; break; } }
+      if(si<0) return 0;
+      let outside=null;
+      for(const c of [r.points[si-1], r.points[si+1]]){
+        if(c && !(c.x===secondNode.x && c.y===secondNode.y)){ outside=c; break; }
+      }
+      if(!outside) return 0;
+      let ox=outside.x-startNode.x, oy=outside.y-startNode.y; const ol=Math.hypot(ox,oy)||1; ox/=ol; oy/=ol;
+      return ox*perp.x + oy*perp.y;
+    }
+    const routesArr=[...comp[0].routes].sort((a,b)=> (lateralKey(a)-lateralKey(b)) || (routeIndex(a)-routeIndex(b)));
+    const N=routesArr.length;
+
+    for(const o of oriented){
+      let dx=o.to.x-o.from.x, dy=o.to.y-o.from.y; const L=Math.hypot(dx,dy)||1; dx/=L; dy/=L;
+      const nx=-dy, ny=dx;
       for(let k=0;k<N;k++){
         const id=routesArr[k]; const lateral=(k-(N-1)/2)*spacing;
-        const m=c.members.find(mm=>mm.routeId===id);
+        const m=o.c.members.find(mm=>mm.routeId===id);
         if(m) res.get(id)[m.seg]={ x:nx*lateral, y:ny*lateral };
       }
-      curK=ptKey(to);
     }
   }
   return res;
