@@ -1069,21 +1069,36 @@ function roundedOffsetPath(points, lats, R){
   }
   // последняя точка
   push(points[n-1].x, points[n-1].y, points[n-1].x-points[n-2].x, points[n-1].y-points[n-2].y, lats[n-2]||0);
-  // убрать «шипы»/петли на внутренней стороне острых поворотов (самопересечение смещения)
-  const clean=[out[0]];
-  for(let k=1;k<out.length;k++){
-    const cand=out[k];
-    if(clean.length>=2){
-      const b=clean[clean.length-1], a=clean[clean.length-2];
-      const d1x=b.x-a.x,d1y=b.y-a.y,d2x=cand.x-b.x,d2y=cand.y-b.y;
-      const m1=Math.hypot(d1x,d1y),m2=Math.hypot(d2x,d2y);
-      if(m1>0.01&&m2>0.01 && (d1x*d2x+d1y*d2y)/(m1*m2) < -0.3) clean.pop(); // срезаем остриё
-    }
-    clean.push(cand);
-  }
+  // убрать петли самопересечения (внутренняя сторона острых поворотов) → чистый внутренний угол
+  const clean=removeLoops(out);
   let d='M'+clean[0].x.toFixed(2)+' '+clean[0].y.toFixed(2);
   for(let i=1;i<clean.length;i++) d+=' L'+clean[i].x.toFixed(2)+' '+clean[i].y.toFixed(2);
   return d;
+}
+/* пересечение отрезков AB и CD строго внутри (или null) */
+function segHit(a,b,c,d){
+  const rx=b.x-a.x, ry=b.y-a.y, sx=d.x-c.x, sy=d.y-c.y;
+  const rxs=rx*sy-ry*sx; if(Math.abs(rxs)<1e-9) return null;
+  const t=((c.x-a.x)*sy-(c.y-a.y)*sx)/rxs;
+  const u=((c.x-a.x)*ry-(c.y-a.y)*rx)/rxs;
+  if(t>1e-4 && t<1-1e-4 && u>1e-4 && u<1-1e-4) return {x:a.x+t*rx, y:a.y+t*ry};
+  return null;
+}
+/* убрать петли самопересечения ломаной: при пересечении срезаем участок до точки пересечения */
+function removeLoops(pts){
+  let out=pts.slice(), guard=0;
+  for(;;){
+    let found=false;
+    for(let i=0;i<out.length-1 && !found;i++){
+      for(let j=i+2;j<out.length-1;j++){
+        if(i===0 && j===out.length-2) continue;     // концы соседние — пропустить
+        const X=segHit(out[i],out[i+1],out[j],out[j+1]);
+        if(X){ out=out.slice(0,i+1).concat([X], out.slice(j+1)); found=true; break; }
+      }
+    }
+    if(!found || guard++>300) break;
+  }
+  return out;
 }
 function linePathFor(points, vecs, R){
   if(points.length<2) return '';
