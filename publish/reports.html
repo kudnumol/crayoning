@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Отчёты · Редактор схем метро</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --txt:#e6e9ef; --muted:#9aa3b2; --accent:#4f8cff; --ok:#37c871; --err:#ff6b6b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.45 -apple-system,Segoe UI,Roboto,Arial,sans-serif;
+    background:var(--bg);color:var(--txt)}
+  header{position:sticky;top:0;z-index:5;background:var(--panel);border-bottom:1px solid var(--line);
+    padding:12px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  header h1{font-size:16px;margin:0;font-weight:650;white-space:nowrap}
+  .key-wrap{display:flex;gap:8px;align-items:center;flex:1;min-width:260px}
+  input[type=password],input[type=text]{flex:1;min-width:160px;background:var(--panel2);
+    border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:8px 10px;font-size:13px}
+  button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:8px 14px;
+    font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+  button.ghost{background:var(--panel2);border:1px solid var(--line);color:var(--txt)}
+  button:disabled{opacity:.5;cursor:default}
+  .status{color:var(--muted);font-size:13px;margin-left:auto;white-space:nowrap}
+  .status.err{color:var(--err)} .status.ok{color:var(--ok)}
+  main{padding:18px;max-width:1100px;margin:0 auto}
+  .empty{color:var(--muted);text-align:center;padding:60px 20px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    margin-bottom:16px;overflow:hidden}
+  .card-top{display:flex;gap:16px;padding:16px;flex-wrap:wrap}
+  .preview{flex:0 0 360px;max-width:100%;background:#fff;border-radius:10px;
+    border:1px solid var(--line);display:flex;align-items:center;justify-content:center;
+    min-height:200px;overflow:hidden}
+  .preview svg{display:block;width:100%;height:auto;max-height:300px}
+  .preview .ph{color:#888;font-size:13px;padding:30px}
+  .meta{flex:1;min-width:280px;display:flex;flex-direction:column;gap:10px}
+  .desc{font-size:15px;font-weight:600;white-space:pre-wrap;word-break:break-word}
+  .desc.none{color:var(--muted);font-weight:400;font-style:italic}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{background:var(--panel2);border:1px solid var(--line);border-radius:999px;
+    padding:3px 10px;font-size:12px;color:var(--muted)}
+  .chip b{color:var(--txt);font-weight:600}
+  .when{color:var(--muted);font-size:12.5px}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:auto}
+  .actions a,.actions button{font-size:12.5px;padding:6px 12px;text-decoration:none;display:inline-block}
+  a.btn{background:var(--accent);color:#fff;border-radius:8px;font-weight:600}
+  a.btn.ghost,button.mini{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;cursor:pointer}
+  details{border-top:1px solid var(--line);background:var(--panel2)}
+  summary{cursor:pointer;padding:10px 16px;color:var(--muted);font-size:13px;user-select:none}
+  pre{margin:0;padding:0 16px 14px;white-space:pre-wrap;word-break:break-word;
+    font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#cdd3de;max-height:320px;overflow:auto}
+  .ua{font-size:11.5px;color:var(--muted);word-break:break-all}
+  @media(max-width:560px){.preview{flex-basis:100%}}
+</style>
+</head>
+<body>
+<header>
+  <h1>🐞 Отчёты</h1>
+  <div class="key-wrap">
+    <input id="key" type="password" placeholder="admin-ключ (ADMIN_KEY)" autocomplete="off" spellcheck="false">
+    <button class="ghost" id="toggleKey" title="Показать/скрыть ключ">👁</button>
+    <button id="load">Загрузить</button>
+    <button class="ghost" id="forget" title="Забыть ключ в этом браузере">Забыть</button>
+  </div>
+  <span class="status" id="status"></span>
+</header>
+<main>
+  <div id="list"></div>
+</main>
+
+<script>
+const SVGNS='http://www.w3.org/2000/svg';
+const CORNER=24;            // радиус скругления по умолчанию (как в редакторе)
+const $=id=>document.getElementById(id);
+const KEY_LS='metro_admin_key';
+
+/* ---------- ключ ---------- */
+const savedKey=localStorage.getItem(KEY_LS);
+if(savedKey){ $('key').value=savedKey; }
+$('toggleKey').onclick=()=>{ const i=$('key'); i.type=i.type==='password'?'text':'password'; };
+$('forget').onclick=()=>{ localStorage.removeItem(KEY_LS); $('key').value=''; setStatus('Ключ удалён из браузера','ok'); };
+$('load').onclick=loadReports;
+$('key').addEventListener('keydown',e=>{ if(e.key==='Enter') loadReports(); });
+
+function setStatus(t,cls=''){ const s=$('status'); s.textContent=t; s.className='status '+cls; }
+
+/* ---------- загрузка ---------- */
+async function loadReports(){
+  const key=$('key').value.trim();
+  if(!key){ setStatus('Введите admin-ключ','err'); return; }
+  localStorage.setItem(KEY_LS,key);
+  setStatus('Загрузка…');
+  $('load').disabled=true;
+  try{
+    const res=await fetch('/api/reports?key='+encodeURIComponent(key),{cache:'no-store'});
+    if(res.status===403){ setStatus('Неверный ключ (403)','err'); $('list').innerHTML=''; return; }
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const items=await res.json();
+    render(items);
+    setStatus('Отчётов: '+items.length+' · обновлено '+new Date().toLocaleTimeString('ru-RU'),'ok');
+  }catch(e){
+    setStatus('Ошибка: '+e.message,'err');
+  }finally{ $('load').disabled=false; }
+}
+
+/* ---------- рендер списка ---------- */
+function render(items){
+  const list=$('list'); list.innerHTML='';
+  if(!items.length){ list.innerHTML='<div class="empty">Отчётов пока нет.</div>'; return; }
+  for(const r of items) list.appendChild(card(r));
+}
+
+function fmtDate(iso){
+  if(!iso) return '—';
+  const d=new Date(iso); if(isNaN(d)) return iso;
+  return d.toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})
+    +' · '+Math.round((Date.now()-d)/3600000)+' ч назад';
+}
+
+function card(r){
+  const c=document.createElement('div'); c.className='card';
+
+  // превью карты
+  const prev=document.createElement('div'); prev.className='preview';
+  let state=null;
+  try{ state=JSON.parse(r.map||'{}'); }catch(_){}
+  const svg=state?buildSVG(state):null;
+  if(svg) prev.appendChild(svg);
+  else prev.innerHTML='<div class="ph">нет карты для предпросмотра</div>';
+
+  // мета
+  const meta=document.createElement('div'); meta.className='meta';
+  const desc=(r.description||'').trim();
+  meta.innerHTML=`
+    <div class="when">${fmtDate(r.created)} · <span style="opacity:.6">id ${esc(r.id||'')}</span></div>
+    <div class="desc ${desc?'':'none'}">${desc?esc(desc):'(без описания)'}</div>
+    <div class="chips">
+      <span class="chip"><b>${num(r.routes)}</b> линий</span>
+      <span class="chip"><b>${num(r.nodes)}</b> узлов</span>
+      <span class="chip">зум <b>${num(r.zoom)}%</b></span>
+      <span class="chip">угол <b>${num(r.angle)}°</b></span>
+      <span class="chip">окно <b>${esc(r.window||'—')}</b></span>
+      ${r.country?`<span class="chip">🌍 <b>${esc(r.country)}</b></span>`:''}
+    </div>
+    <div class="ua">${esc(r.ua||'')}</div>
+    <div class="actions"></div>`;
+
+  // действия
+  const act=meta.querySelector('.actions');
+  if(state && hasContent(state)){
+    const a=document.createElement('a'); a.className='btn'; a.target='_blank';
+    a.textContent='Открыть в редакторе';
+    try{ a.href='/#map='+stateToParam(state); }catch(_){ a.href='#'; }
+    act.appendChild(a);
+  }
+  const dl=document.createElement('button'); dl.className='mini'; dl.textContent='Скачать JSON карты';
+  dl.onclick=()=>downloadJSON(r);
+  act.appendChild(dl);
+
+  const top=document.createElement('div'); top.className='card-top';
+  top.appendChild(prev); top.appendChild(meta);
+  c.appendChild(top);
+
+  // лог
+  if(r.log){
+    const d=document.createElement('details');
+    d.innerHTML='<summary>Журнал событий ('+(r.log.split('\n').length)+' строк)</summary><pre>'+esc(r.log)+'</pre>';
+    c.appendChild(d);
+  }
+  return c;
+}
+
+function downloadJSON(r){
+  const blob=new Blob([r.map||'{}'],{type:'application/json'});
+  const u=URL.createObjectURL(blob);const a=document.createElement('a');
+  a.href=u;a.download='map-'+(r.id||'report')+'.json';a.click();
+  setTimeout(()=>URL.revokeObjectURL(u),1000);
+}
+
+/* ===================================================================
+   РЕНДЕР КАРТЫ — портирован из редактора (buildExportSVG + помощники)
+   =================================================================== */
+function el(tag,attrs){ const e=document.createElementNS(SVGNS,tag);
+  for(const k in attrs) e.setAttribute(k,attrs[k]); return e; }
+
+function hasContent(state){
+  if(!state||!state.routes) return false;
+  for(const r of state.routes){ if((r.points&&r.points.length)||(r.stations&&r.stations.length)) return true; }
+  return (state.nodes&&state.nodes.length)>0;
+}
+
+function bbox(state){
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity,has=false;
+  for(const r of (state.routes||[])){
+    for(const p of (r.points||[])){has=true;minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y);}
+    for(const s of (r.stations||[])){has=true;minX=Math.min(minX,s.x);minY=Math.min(minY,s.y);maxX=Math.max(maxX,s.x);maxY=Math.max(maxY,s.y);}
+  }
+  for(const n of (state.nodes||[])){has=true;minX=Math.min(minX,n.x);minY=Math.min(minY,n.y);maxX=Math.max(maxX,n.x);maxY=Math.max(maxY,n.y);}
+  return has?{minX,minY,maxX,maxY}:null;
+}
+
+function getRoute(state,id){ return (state.routes||[]).find(r=>r.id===id); }
+
+function buildSVG(state){
+  const b=bbox(state); if(!b) return null;
+  const pad=40;
+  const w=(b.maxX-b.minX)+pad*2, h=(b.maxY-b.minY)+pad*2;
+  const out=el('svg',{xmlns:SVGNS,viewBox:`${b.minX-pad} ${b.minY-pad} ${w} ${h}`,
+    preserveAspectRatio:'xMidYMid meet'});
+  out.appendChild(el('rect',{x:b.minX-pad,y:b.minY-pad,width:w,height:h,fill:'#ffffff'}));
+  const g=el('g',{});
+  for(const r of (state.routes||[])){
+    if(r.points&&r.points.length>=2){
+      g.appendChild(el('path',{d:roundedPathData(r.points,CORNER),fill:'none',stroke:r.color,
+        'stroke-width':r.width,'stroke-linejoin':'round','stroke-linecap':'round'}));
+    }
+  }
+  for(const r of (state.routes||[])) for(const st of (r.stations||[])) drawStation(g,r,st,'#1a1a1a');
+  for(const n of (state.nodes||[])) drawNode(g,state,n,'#1a1a1a');
+  out.appendChild(g);
+  return out;
+}
+
+function roundedPathData(pts,r){
+  if(pts.length<2) return '';
+  if(pts.length===2||r<=0) return pts.map((p,i)=>(i?'L':'M')+p.x+' '+p.y).join(' ');
+  let d=`M${pts[0].x} ${pts[0].y}`;
+  for(let i=1;i<pts.length-1;i++){
+    const p0=pts[i-1],p1=pts[i],p2=pts[i+1];
+    const v1={x:p0.x-p1.x,y:p0.y-p1.y},v2={x:p2.x-p1.x,y:p2.y-p1.y};
+    const l1=Math.hypot(v1.x,v1.y)||1,l2=Math.hypot(v2.x,v2.y)||1;
+    const rr=Math.min(r,l1/2,l2/2);
+    const a={x:p1.x+v1.x/l1*rr,y:p1.y+v1.y/l1*rr};
+    const bb={x:p1.x+v2.x/l2*rr,y:p1.y+v2.y/l2*rr};
+    d+=` L${a.x.toFixed(2)} ${a.y.toFixed(2)} Q${p1.x} ${p1.y} ${bb.x.toFixed(2)} ${bb.y.toFixed(2)}`;
+  }
+  const last=pts[pts.length-1]; d+=` L${last.x} ${last.y}`;
+  return d;
+}
+
+function lineAngleAt(points,x,y){
+  if(!points||points.length<2) return 0;
+  let bestD=Infinity,ang=0;
+  for(let i=0;i<points.length-1;i++){
+    const a=points[i],b=points[i+1];
+    const dx=b.x-a.x,dy=b.y-a.y,len2=dx*dx+dy*dy||1;
+    let t=((x-a.x)*dx+(y-a.y)*dy)/len2; t=Math.max(0,Math.min(1,t));
+    const px=a.x+dx*t,py=a.y+dy*t,d=Math.hypot(px-x,py-y);
+    if(d<bestD){bestD=d;ang=Math.atan2(dy,dx)*180/Math.PI;}
+  }
+  return ang;
+}
+
+function drawStation(g,r,st,labelCol){
+  const w=r.width; const sg=el('g',{}); const type=st.type;
+  if(type==='dot'){
+    sg.appendChild(el('circle',{cx:st.x,cy:st.y,r:w*0.55,fill:'#fff',stroke:r.color,'stroke-width':w*0.35}));
+  }else if(type==='interchange'){
+    sg.appendChild(el('circle',{cx:st.x,cy:st.y,r:w*0.85,fill:'#fff',stroke:'#222','stroke-width':w*0.3}));
+  }else if(type==='mega'){
+    sg.appendChild(el('circle',{cx:st.x,cy:st.y,r:w*1.15,fill:'#fff',stroke:'#222','stroke-width':w*0.32}));
+    sg.appendChild(el('circle',{cx:st.x,cy:st.y,r:w*0.45,fill:'#222'}));
+  }else if(type==='tick'){
+    const ang=lineAngleAt(r.points,st.x,st.y);
+    sg.appendChild(el('rect',{x:st.x-w*0.18,y:st.y-w*0.9,width:w*0.36,height:w*1.8,
+      fill:'#fff',stroke:r.color,'stroke-width':w*0.18,rx:w*0.1,transform:`rotate(${ang} ${st.x} ${st.y})`}));
+  }else if(type==='limited'){
+    sg.appendChild(el('circle',{cx:st.x,cy:st.y,r:w*0.55,fill:r.color,stroke:'#fff','stroke-width':w*0.3}));
+  }else if(type==='terminus'){
+    const nstr=(r.num!=null&&r.num!=='')?String(r.num):'';
+    const hh=w*1.8; const bw=Math.max(hh,w*0.78*Math.max(1,nstr.length)+w*0.7);
+    sg.appendChild(el('rect',{x:st.x-bw/2,y:st.y-hh/2,width:bw,height:hh,
+      fill:r.color,stroke:'#fff','stroke-width':w*0.26,rx:hh*0.34}));
+    if(nstr){
+      const t=el('text',{x:st.x,y:st.y,'text-anchor':'middle','dominant-baseline':'central',
+        'font-size':w*1.1,'font-weight':'700',fill:'#fff','font-family':'-apple-system,Segoe UI,Arial,sans-serif'});
+      t.textContent=nstr; sg.appendChild(t);
+    }
+  }
+  drawLabel(sg,st,w,labelCol);
+  g.appendChild(sg);
+}
+
+function drawLabel(sg,st,w,labelCol){
+  if(!st.label) return;
+  const off=w*1.4+4; let tx=st.x,ty=st.y,anchor='middle',baseline='middle';
+  const d=st.dir||'c';
+  if(d.includes('e')){tx+=off;anchor='start';}
+  if(d.includes('w')){tx-=off;anchor='end';}
+  if(d.includes('n')){ty-=off;baseline='auto';}
+  if(d.includes('s')){ty+=off;baseline='hanging';}
+  if(d==='c'){anchor='middle';baseline='middle';}
+  const t=el('text',{x:tx,y:ty,'text-anchor':anchor,'dominant-baseline':baseline,
+    'font-size':st.fontSize||14,'font-weight':st.fontWeight||'600',
+    'font-family':'-apple-system,Segoe UI,Arial,sans-serif',fill:labelCol||'#1a1a1a'});
+  t.textContent=st.label; sg.appendChild(t);
+}
+
+function drawNode(g,state,n,labelCol){
+  let w=9; for(const l of (n.links||[])){ const r=getRoute(state,l.routeId); if(r) w=Math.max(w,r.width); }
+  const sg=el('g',{});
+  if(n.type==='mega'){
+    sg.appendChild(el('circle',{cx:n.x,cy:n.y,r:w*1.25,fill:'#fff',stroke:'#222','stroke-width':w*0.32}));
+    sg.appendChild(el('circle',{cx:n.x,cy:n.y,r:w*0.5,fill:'#222'}));
+  }else{
+    sg.appendChild(el('circle',{cx:n.x,cy:n.y,r:w*0.95,fill:'#fff',stroke:'#222','stroke-width':w*0.32}));
+  }
+  drawLabel(sg,n,w,labelCol);
+  g.appendChild(sg);
+}
+
+/* ссылка «открыть в редакторе» — та же кодировка, что в редакторе */
+function stateToParam(state){ return btoa(unescape(encodeURIComponent(JSON.stringify(state)))); }
+
+/* ---------- утилиты ---------- */
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,m=>(
+  {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+function num(v){ return (v==null||v==='')?'—':v; }
+
+/* автозагрузка, если ключ уже сохранён */
+if(savedKey) loadReports();
+</script>
+</body>
+</html>
