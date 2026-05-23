@@ -306,9 +306,13 @@
         </select>
         <div class="btn-row">
           <button id="btnGrid">Сетка: вкл</button>
+          <button id="btnBundle">Пучки: вкл</button>
+        </div>
+        <div class="btn-row">
           <button id="btnLog">Логи</button>
         </div>
-        <div class="hint">Колесо мыши — зум. Зажми <b>Пробел</b> или среднюю кнопку и тяни — пан.</div>
+        <div class="hint">Колесо мыши — зум. Зажми <b>Пробел</b> или среднюю кнопку и тяни — пан.
+          <b>Пучки</b>: линии вдоль одной грани сетки разводятся параллельно (видно в режиме «выбор»).</div>
       </div>
 
     </div>
@@ -457,6 +461,7 @@ let drawing = null;                     // route id currently being drawn
 let history = [], future = [];
 let showGrid = true;
 let cornerRadius = 24;          // радиус скругления поворотов линии
+let bundling = true;            // разводить параллельные линии в «пучки»
 let canvasBg = '#ffffff';       // фон холста
 let gridColor1 = '#eef1f5', gridColor2 = '#dde3ea';
 let labelColor = '#1a1a1a';     // цвет подписей (адаптируется к фону)
@@ -675,10 +680,14 @@ function render(){
     g.appendChild(gridG);
   }
 
+  // bundling: смещения сегментов для каждого маршрута (для линий и станций)
+  const bvecs = buildBundles(false);
+
   // routes (lines)
   for(const r of state.routes){
     if(r.points.length>=2){
-      const d = roundedPathData(r.points, cornerRadius);
+      const pts = offsetPolyline(r.points, bvecs.get(r.id));
+      const d = roundedPathData(pts, cornerRadius);
       g.appendChild(el('path',{d, fill:'none', stroke:r.color, 'stroke-width':r.width,
         'stroke-linejoin':'round','stroke-linecap':'round'}));
     }
@@ -696,10 +705,15 @@ function render(){
     }
   }
 
-  // line stations (dot/tick/limited/terminus)
-  for(const r of state.routes)
-    for(const st of (r.stations||[]))
-      drawStation(g, r, st);
+  // line stations (dot/tick/limited/terminus) — со смещением пучка
+  for(const r of state.routes){
+    const vecs=bvecs.get(r.id);
+    for(const st of (r.stations||[])){
+      const v=stationOffsetVec(r, vecs, st);
+      const sst=(v.x||v.y) ? {...st, x:st.x+v.x, y:st.y+v.y} : st;
+      drawStation(g, r, sst);
+    }
+  }
 
   // interchange/mega nodes (поверх линий)
   for(const n of state.nodes) drawNode(g, n);
@@ -862,6 +876,83 @@ function roundedPathData(pts, r){
   const last=pts[pts.length-1];
   d += ` L${last.x} ${last.y}`;
   return d;
+}
+
+/* ---------- БАНДЛИНГ: разводка параллельных линий ---------- */
+/* канонический ключ грани сетки (неориентированный) */
+function segKeyOf(A,B){
+  if(A.x<B.x || (A.x===B.x && A.y<=B.y)) return A.x+','+A.y+','+B.x+','+B.y;
+  return B.x+','+B.y+','+A.x+','+A.y;
+}
+function routeIndex(id){ return state.routes.findIndex(r=>r.id===id); }
+
+/* для каждого маршрута — массив векторов смещения по сегментам (нули, если соло).
+   force=true — считать всегда (для экспорта); иначе в режимах draw/edit смещения нет */
+function buildBundles(force){
+  const res=new Map();
+  for(const r of state.routes)
+    res.set(r.id, new Array(Math.max(0,(r.points||[]).length-1)).fill(0).map(()=>({x:0,y:0})));
+  if(!bundling) return res;
+  if(!force && (mode==='draw' || mode==='edit')) return res;
+
+  const groups=new Map();
+  for(const r of state.routes){
+    for(let i=0;i<r.points.length-1;i++){
+      const A=r.points[i], B=r.points[i+1];
+      if(A.x===B.x && A.y===B.y) continue;
+      const key=segKeyOf(A,B);
+      if(!groups.has(key)) groups.set(key,[]);
+      groups.get(key).push({routeId:r.id, seg:i});
+    }
+  }
+  for(const [key,list] of groups){
+    if(list.length<2) continue;
+    const p=key.split(',').map(Number);
+    let dx=p[2]-p[0], dy=p[3]-p[1]; const L=Math.hypot(dx,dy)||1; dx/=L; dy/=L;
+    const nx=-dy, ny=dx;                       // левая нормаль канонического направления
+    list.sort((a,b)=> (routeIndex(a.routeId)-routeIndex(b.routeId)) || (a.routeId-b.routeId));
+    const N=list.length;
+    let spacing=8; for(const e of list){ const r=getRoute(e.routeId); if(r) spacing=Math.max(spacing, r.width); }
+    for(let k=0;k<N;k++){
+      const o=(k-(N-1)/2)*spacing;            // центрируем пучок на грани
+      res.get(list[k].routeId)[list[k].seg]={ x:nx*o, y:ny*o };
+    }
+  }
+  return res;
+}
+/* пересечение прямых (точка+направление) */
+function intersectPtDir(p,d,q,e){
+  const cross=d.x*e.y-d.y*e.x;
+  if(Math.abs(cross)<1e-9) return null;
+  const t=((q.x-p.x)*e.y-(q.y-p.y)*e.x)/cross;
+  return { x:p.x+t*d.x, y:p.y+t*d.y };
+}
+/* сместить ломаную: vecs[i] — вектор смещения сегмента i. Углы — митрой (на пересечении). */
+function offsetPolyline(points, vecs){
+  const n=points.length;
+  if(n<2 || !vecs) return points.map(p=>({x:p.x,y:p.y}));
+  const out=[];
+  for(let i=0;i<n;i++){
+    if(i===0){ const v=vecs[0]||{x:0,y:0}; out.push({x:points[0].x+v.x, y:points[0].y+v.y}); continue; }
+    if(i===n-1){ const v=vecs[n-2]||{x:0,y:0}; out.push({x:points[i].x+v.x, y:points[i].y+v.y}); continue; }
+    const vP=vecs[i-1]||{x:0,y:0}, vN=vecs[i]||{x:0,y:0};
+    const aPt={x:points[i].x+vP.x, y:points[i].y+vP.y}, aDir={x:points[i].x-points[i-1].x, y:points[i].y-points[i-1].y};
+    const bPt={x:points[i].x+vN.x, y:points[i].y+vN.y}, bDir={x:points[i+1].x-points[i].x, y:points[i+1].y-points[i].y};
+    const inter=intersectPtDir(aPt,aDir,bPt,bDir);
+    if(inter){ out.push(inter); }
+    else {
+      // прямая стыковка: держим параллель на стороне с бОльшим смещением (бандл), рампа уходит на соло
+      const v=(Math.hypot(vP.x,vP.y)>=Math.hypot(vN.x,vN.y))?vP:vN;
+      out.push({x:points[i].x+v.x, y:points[i].y+v.y});
+    }
+  }
+  return out;
+}
+/* вектор смещения для станции маршрута r по её положению */
+function stationOffsetVec(r, vecs, st){
+  if(!vecs || r.points.length<2) return {x:0,y:0};
+  const seg=nearestOnPolyline(r.points, st.x, st.y).seg;
+  return vecs[seg] || {x:0,y:0};
 }
 
 /* ---------- UI: список маршрутов ---------- */
@@ -1696,6 +1787,7 @@ function fitToContent(){
 
 /* grid + log toggles */
 document.getElementById('btnGrid').onclick=e=>{ showGrid=!showGrid; e.target.textContent='Сетка: '+(showGrid?'вкл':'выкл'); render(); };
+document.getElementById('btnBundle').onclick=e=>{ bundling=!bundling; e.target.textContent='Пучки: '+(bundling?'вкл':'выкл'); Log.info('bundling', bundling); render(); };
 document.getElementById('btnLog').onclick=()=>{ document.getElementById('logPanel').classList.toggle('open'); };
 Log.el=document.getElementById('logBody');
 document.getElementById('logClose').onclick=()=>document.getElementById('logPanel').classList.remove('open');
@@ -1960,18 +2052,26 @@ function buildExportSVG(scale=2){
   bg.setAttribute('width',w);bg.setAttribute('height',h);bg.setAttribute('fill','#ffffff');
   out.appendChild(bg);
   const g=document.createElementNS(ns,'g');
+  const bvecs=buildBundles(true);   // в экспорте пучки всегда
   // lines
   for(const r of state.routes){
     if(r.points.length>=2){
       const p=document.createElementNS(ns,'path');
-      p.setAttribute('d', roundedPathData(r.points, cornerRadius));
+      p.setAttribute('d', roundedPathData(offsetPolyline(r.points, bvecs.get(r.id)), cornerRadius));
       p.setAttribute('fill','none');p.setAttribute('stroke',r.color);
       p.setAttribute('stroke-width',r.width);p.setAttribute('stroke-linejoin','round');
       p.setAttribute('stroke-linecap','round');
       g.appendChild(p);
     }
   }
-  for(const r of state.routes) for(const st of (r.stations||[])) drawStation(g,r,st,'#1a1a1a');
+  for(const r of state.routes){
+    const vecs=bvecs.get(r.id);
+    for(const st of (r.stations||[])){
+      const v=stationOffsetVec(r, vecs, st);
+      const sst=(v.x||v.y) ? {...st, x:st.x+v.x, y:st.y+v.y} : st;
+      drawStation(g, r, sst, '#1a1a1a');
+    }
+  }
   for(const n of (state.nodes||[])) drawNode(g,n,'#1a1a1a');
   out.appendChild(g);
   return out;
