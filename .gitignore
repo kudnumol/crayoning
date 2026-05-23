@@ -13,3 +13,4 @@ npm-debug.log*
 !.dev.vars.example
 .env*
 !.env.example
+_debug_*
