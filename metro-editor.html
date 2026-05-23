@@ -127,9 +127,9 @@
     transition:.25s;pointer-events:none}
   .toast.show{opacity:1}
   .toast.err{background:var(--danger)}
-  #projOverlay{position:absolute;inset:0;background:rgba(0,0,0,.5);z-index:21;display:none;
+  #projOverlay,#newOverlay{position:absolute;inset:0;background:rgba(0,0,0,.5);z-index:21;display:none;
     align-items:center;justify-content:center}
-  #projOverlay.open{display:flex}
+  #projOverlay.open,#newOverlay.open{display:flex}
   #projList{display:flex;flex-direction:column;gap:8px}
   .projitem{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;
     background:#1b1e25;border:1px solid var(--line)}
@@ -329,6 +329,9 @@
     </div>
     <div id="topbar">
       <div class="grp">
+        <button id="tbNewProject" title="Начать новый проект">＋ Новый проект</button>
+      </div>
+      <div class="grp">
         <button id="tbUndo" title="Отменить (Ctrl+Z)">↶ Отмена</button>
         <button id="tbRedo" title="Вернуть (Ctrl+Y)">↷ Вернуть</button>
       </div>
@@ -363,6 +366,22 @@
           <button id="modalCancel" style="background:transparent">Закрыть</button>
           <button id="modalCopy">Копировать</button>
           <button id="modalAction" class="primary">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="newOverlay">
+      <div class="modal" style="width:440px">
+        <h3>Новый проект</h3>
+        <div class="body">
+          <p class="hint" style="margin-bottom:10px">Текущая схема будет очищена. Сохранить её перед этим?</p>
+          <label>Название текущего проекта</label>
+          <input type="text" id="newSaveName" placeholder="Моя схема">
+        </div>
+        <div class="foot">
+          <button id="newCancel" style="background:transparent">Отмена</button>
+          <button id="newDiscard" class="danger">Без сохранения</button>
+          <button id="newSave" class="primary">💾 Сохранить и создать</button>
         </div>
       </div>
     </div>
@@ -1897,6 +1916,34 @@ document.getElementById('fileInput').addEventListener('change',e=>{ if(e.target.
 window.addEventListener('beforeunload', e=>{
   if(dirtySinceSave && state.routes.some(r=>r.points && r.points.length)){ e.preventDefault(); e.returnValue=''; }
 });
+
+/* начать новый проект с нуля */
+function newProject(){
+  state={routes:[],nodes:[],selectedRoute:null,nextId:1};
+  history=[]; future=[];
+  view={x:svg.clientWidth/2, y:svg.clientHeight/2, scale:1};
+  createRoute(true);
+  startDrawing();           // сразу режим рисования, как при первом запуске
+  renderRouteList(); syncRouteOpts();
+  dirtySinceSave=false; updateUndoButtons(); updateZoomTag(); render();
+  Log.info('new project'); toast('Новый проект');
+}
+document.getElementById('tbNewProject').onclick=()=>{
+  const hasContent = state.routes.some(r=>r.points && r.points.length) || (state.nodes && state.nodes.length);
+  if(!hasContent){ newProject(); return; }
+  document.getElementById('newSaveName').value =
+    document.getElementById('projName').value || 'Схема '+new Date().toLocaleDateString('ru-RU');
+  document.getElementById('newOverlay').classList.add('open');
+};
+document.getElementById('newCancel').onclick=()=>document.getElementById('newOverlay').classList.remove('open');
+document.getElementById('newDiscard').onclick=()=>{ document.getElementById('newOverlay').classList.remove('open'); newProject(); };
+document.getElementById('newSave').onclick=()=>{
+  const nm=document.getElementById('newSaveName').value.trim();
+  if(!nm){ toast('Введите название','err'); return; }
+  saveProject(nm);
+  document.getElementById('newOverlay').classList.remove('open');
+  newProject();
+};
 
 /* ---------- ЭКСПОРТ ---------- */
 function buildExportSVG(scale=2){
