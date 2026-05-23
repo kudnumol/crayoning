@@ -683,11 +683,10 @@ function render(){
   // bundling: смещения сегментов для каждого маршрута (для линий и станций)
   const bvecs = buildBundles(false);
 
-  // routes (lines)
+  // routes (lines) — концентрическое смещение для пучков
   for(const r of state.routes){
     if(r.points.length>=2){
-      const pts = offsetPolyline(r.points, bvecs.get(r.id));
-      const d = roundedPathData(pts, cornerRadius);
+      const d = linePathFor(r.points, bvecs.get(r.id), cornerRadius);
       g.appendChild(el('path',{d, fill:'none', stroke:r.color, 'stroke-width':r.width,
         'stroke-linejoin':'round','stroke-linecap':'round'}));
     }
@@ -1019,6 +1018,56 @@ function stationOffsetVec(r, vecs, st){
   if(!vecs || r.points.length<2) return {x:0,y:0};
   const seg=nearestOnPolyline(r.points, st.x, st.y).seg;
   return vecs[seg] || {x:0,y:0};
+}
+/* знаковое боковое смещение каждого сегмента (в системе самого маршрута) из мировых векторов */
+function latsFromVecs(points, vecs){
+  const lats=[];
+  for(let i=0;i<points.length-1;i++){
+    const v=(vecs&&vecs[i])||{x:0,y:0};
+    const dx=points[i+1].x-points[i].x, dy=points[i+1].y-points[i].y, L=Math.hypot(dx,dy)||1;
+    lats.push(v.x*(-dy/L) + v.y*(dx/L));   // проекция на левую нормаль сегмента
+  }
+  return lats;
+}
+/* путь линии со скруглением ОСЕВОЙ и последующим перпендикулярным смещением (концентрические дуги).
+   lats[i] — боковое смещение сегмента i. Зазор между линиями ровный, острые углы не «стреляют». */
+function roundedOffsetPath(points, lats, R){
+  const n=points.length;
+  if(n<2) return '';
+  const out=[];
+  const push=(px,py,tx,ty,off)=>{ const L=Math.hypot(tx,ty)||1; out.push({x:px + (-ty/L)*off, y:py + (tx/L)*off}); };
+  // первая точка
+  push(points[0].x, points[0].y, points[1].x-points[0].x, points[1].y-points[0].y, lats[0]||0);
+  for(let i=1;i<n-1;i++){
+    const p0=points[i-1], p1=points[i], p2=points[i+1];
+    const v1={x:p0.x-p1.x,y:p0.y-p1.y}, v2={x:p2.x-p1.x,y:p2.y-p1.y};
+    const l1=Math.hypot(v1.x,v1.y)||1, l2=Math.hypot(v2.x,v2.y)||1;
+    const rr=Math.min(R, l1/2, l2/2);
+    const a={x:p1.x+v1.x/l1*rr, y:p1.y+v1.y/l1*rr};
+    const b={x:p1.x+v2.x/l2*rr, y:p1.y+v2.y/l2*rr};
+    const sIn=lats[i-1]||0, sOut=lats[i]||0;
+    push(a.x,a.y, -v1.x,-v1.y, sIn);                  // вход в дугу (касательная по сегменту i-1→i)
+    const K=10;
+    for(let k=1;k<K;k++){
+      const t=k/K, mt=1-t;
+      const x=mt*mt*a.x + 2*mt*t*p1.x + t*t*b.x;
+      const y=mt*mt*a.y + 2*mt*t*p1.y + t*t*b.y;
+      const dx=2*mt*(p1.x-a.x)+2*t*(b.x-p1.x);        // касательная (производная безье)
+      const dy=2*mt*(p1.y-a.y)+2*t*(b.y-p1.y);
+      push(x,y, dx,dy, sIn+(sOut-sIn)*t);             // смещение плавно меняется на дуге (рампа)
+    }
+    push(b.x,b.y, v2.x,v2.y, sOut);
+  }
+  // последняя точка
+  push(points[n-1].x, points[n-1].y, points[n-1].x-points[n-2].x, points[n-1].y-points[n-2].y, lats[n-2]||0);
+  let d='M'+out[0].x.toFixed(2)+' '+out[0].y.toFixed(2);
+  for(let i=1;i<out.length;i++) d+=' L'+out[i].x.toFixed(2)+' '+out[i].y.toFixed(2);
+  return d;
+}
+function linePathFor(points, vecs, R){
+  if(points.length<2) return '';
+  const lats=latsFromVecs(points, vecs);
+  return lats.some(s=>Math.abs(s)>0.01) ? roundedOffsetPath(points, lats, R) : roundedPathData(points, R);
 }
 
 /* ---------- UI: список маршрутов ---------- */
@@ -2123,7 +2172,7 @@ function buildExportSVG(scale=2){
   for(const r of state.routes){
     if(r.points.length>=2){
       const p=document.createElementNS(ns,'path');
-      p.setAttribute('d', roundedPathData(offsetPolyline(r.points, bvecs.get(r.id)), cornerRadius));
+      p.setAttribute('d', linePathFor(r.points, bvecs.get(r.id), cornerRadius));
       p.setAttribute('fill','none');p.setAttribute('stroke',r.color);
       p.setAttribute('stroke-width',r.width);p.setAttribute('stroke-linejoin','round');
       p.setAttribute('stroke-linecap','round');
